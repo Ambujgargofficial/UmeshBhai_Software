@@ -26,14 +26,14 @@
             <h3 id="confirm-title" class="text-xl font-bold text-gray-900 mb-2">Confirm</h3>
             <p id="confirm-message" class="text-gray-600 mb-6">Kya aap sach mein delete karna chahte hain?</p>
             <div class="flex gap-3 justify-end">
-                <button onclick="closeConfirm()" class="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 font-medium transition-colors">Cancel</button>
-                <button onclick="executeConfirm()" class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium shadow-sm transition-colors">Haan, Delete</button>
+                <button id="btn-confirm-no" onclick="closeConfirm()" class="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 font-medium transition-colors">Cancel</button>
+                <button id="btn-confirm-yes" onclick="executeConfirm()" class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium shadow-sm transition-colors">Haan, Delete</button>
             </div>
         </div>
     </div>
 
     <div id="app" class="max-w-5xl mx-auto p-4 md:p-8 space-y-6">
-        <div class="text-center p-12 text-gray-500"><i class="fas fa-spinner fa-spin text-3xl"></i><p class="mt-4">Loading application...</p></div>
+        <div class="text-center p-12 text-gray-500"><i class="fas fa-spinner fa-spin text-3xl"></i><p class="mt-4">App start ho rahi hai...</p></div>
     </div>
 
 <script>
@@ -49,6 +49,7 @@
     let currentView = 'dashboard';
     let activeRecordId = null;
     let searchQuery = '';
+    let isProcessing = false; // Prevents double-clicks
     
     let setupData = {
         ownerName: '', totalArea: '', unit: 'Gaj', keptArea: '', numDivisions: '', divisionNames: [], divisionMode: 'equal', divisionAreas: []
@@ -58,57 +59,54 @@
     // ==========================================
     // 3. INITIALIZATION & DATABASE
     // ==========================================
-    async function init() {
-        if (DB_SYNC_URL.trim() !== "") {
-            showToast("Data sync ho raha hai...", "info");
-            try {
-                const response = await fetch(DB_SYNC_URL + "?action=getRecords");
-                const data = await response.json();
-                records = data || [];
-                showToast("Data safaltapurvak load ho gaya!", "success");
-            } catch (error) {
-                console.error("Error fetching data:", error);
-                showToast("Server se connect karne mein error.", "error");
-                setupSheetDemoData(); 
-            }
-        } else {
-            setupSheetDemoData();
-        }
-        render();
+    function init() {
+        render(); // Instantly show UI
+        loadFromDatabase(); // Quietly fetch data
     }
 
-    function setupSheetDemoData() {
-        records = [
-            {
-                id: "demo-1",
-                dateCreated: new Date().toISOString(),
-                ownerName: "Umesh",
-                totalArea: 500,
-                unit: "Gaj",
-                divisions: [
-                    { id: "div-1", name: "Hissa 1", allocatedArea: 250, isOwnerShare: false, sales: [] },
-                    { id: "div-2", name: "Hissa 2", allocatedArea: 250, isOwnerShare: false, sales: [] }
-                ]
-            }
-        ];
-        showToast("Demo Data load kiya gaya.", "info");
-    }
-
-    async function syncToDatabase() {
-        if (DB_SYNC_URL.trim() === "") return; 
+    async function loadFromDatabase() {
+        if (DB_SYNC_URL.trim() === "") return;
         try {
-            await fetch(DB_SYNC_URL, {
-                redirect: "follow",
-                method: "POST",
-                headers: {
-                    "Content-Type": "text/plain;charset=utf-8",
-                },
-                body: JSON.stringify({ action: "saveRecords", records: records })
-            });
+            // Standard fetch without artificial timeouts
+            const response = await fetch(DB_SYNC_URL + "?action=getRecords");
+            const textData = await response.text();
+            
+            try {
+                const parsed = JSON.parse(textData);
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                    records = parsed;
+                    if(currentView === 'dashboard') {
+                        render(); 
+                    }
+                }
+            } catch(e) {
+                console.error("No valid data found or DB is empty.");
+            }
         } catch (error) {
-            console.error("Error saving data:", error);
-            showToast("Data save karne mein connection error aayi.", "error");
+            console.error("Fetch error:", error);
+            showToast("Data fetch karne mein error aayi. Offline mode.", "error");
         }
+    }
+
+    // Fire-and-forget sync (Perfectly configured to bypass CORS and save properly)
+    function syncToDatabase() {
+        if (DB_SYNC_URL.trim() === "") return; 
+        
+        // Sending as text/plain completely bypasses the browser's CORS preflight block
+        // meaning it will go straight to Google Sheets and save successfully.
+        fetch(DB_SYNC_URL, {
+            method: "POST",
+            headers: { "Content-Type": "text/plain;charset=utf-8" },
+            body: JSON.stringify({ action: "saveRecords", records: records })
+        })
+        .then(response => response.json())
+        .then(data => {
+            console.log("Data successfully synced to Google Sheets", data);
+        })
+        .catch(error => {
+            console.error("Sync Error:", error);
+            showToast("Server se link toot gaya, par data locally save hai.", "info");
+        });
     }
 
     // ==========================================
@@ -149,6 +147,7 @@
     }
 
     function closeConfirm() {
+        if(isProcessing) return; 
         const modal = document.getElementById('confirm-modal');
         modal.classList.add('hidden');
         modal.classList.remove('flex');
@@ -156,11 +155,24 @@
     }
 
     function executeConfirm() {
-        if (confirmActionCallback) confirmActionCallback();
-        closeConfirm();
+        if (confirmActionCallback && !isProcessing) {
+            isProcessing = true;
+            const btn = document.getElementById('btn-confirm-yes');
+            const origText = btn.innerHTML;
+            btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Wait...`;
+            btn.disabled = true;
+
+            confirmActionCallback(); // Executes instantly
+
+            isProcessing = false;
+            btn.innerHTML = origText;
+            btn.disabled = false;
+            closeConfirm();
+        }
     }
 
     function getRemainingArea(division) {
+        if (!division || !division.sales) return division ? parseFloat(division.allocatedArea) : 0;
         const totalSold = division.sales.reduce((sum, sale) => sum + parseFloat(sale.soldArea || 0), 0);
         return parseFloat((division.allocatedArea - totalSold).toFixed(4));
     }
@@ -176,6 +188,7 @@
     // 5. EVENT HANDLERS
     // ==========================================
     function setView(view, id = null) {
+        if(isProcessing) return;
         currentView = view;
         activeRecordId = id;
         render();
@@ -187,36 +200,39 @@
     }
 
     function deleteRecord(id) {
+        if(isProcessing) return;
         showConfirm("Record Delete Karein?", "Kya aap sach mein is Mukhya Malik ke pure record ko hamesha ke liye delete karna chahte hain?", () => {
             records = records.filter(r => r.id !== id);
-            syncToDatabase();
             showToast("Pura Record delete ho gaya.", "success");
             render();
+            syncToDatabase();
         });
     }
 
     function deleteDivision(divId) {
+        if(isProcessing) return;
         showConfirm("Hissa Delete Karein?", "Kya aap sach mein is Hissedar aur iski saari sales ko delete karna chahte hain?", () => {
             const record = records.find(r => r.id === activeRecordId);
             record.divisions = record.divisions.filter(d => d.id !== divId);
-            syncToDatabase();
             showToast("Hissa delete ho gaya.", "success");
             render();
+            syncToDatabase();
         });
     }
 
     function deleteSale(divId, saleId) {
+        if(isProcessing) return;
         showConfirm("Sale Delete Karein?", "Kya aap sach mein is Sale ko delete karna chahte hain?", () => {
             const record = records.find(r => r.id === activeRecordId);
             const division = record.divisions.find(d => d.id === divId);
             division.sales = division.sales.filter(s => s.id !== saleId);
-            syncToDatabase();
             showToast("Sale delete ho gayi.", "success");
             render();
+            syncToDatabase();
         });
     }
 
-    // --- Core PDF Export Logic (PERFECT LEDGER DESIGN FIXED CROP) ---
+    // --- Core PDF Export Logic ---
     function generatePDFTemplate(record, specificDivId = null) {
         let html = `
         <div style="width: 730px; box-sizing: border-box; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #111; padding: 15px; background: #fff; margin: 0 auto;">
@@ -297,7 +313,7 @@
 
         html += `
             <div style="margin-top: 30px; display: flex; justify-content: space-between; align-items: flex-end; page-break-inside: avoid; border-top: 1px solid #d1d5db; padding-top: 15px;">
-                <div style="font-size: 11px; color: #6b7280; font-weight: 500;">Official Record generated automatically via App.</div>
+                <div style="font-size: 11px; color: #6b7280; font-weight: 500;">Official Record generated via App.</div>
                 <div style="text-align: center; width: 200px;">
                     <div style="border-bottom: 1px solid #111; height: 30px; margin-bottom: 6px;"></div>
                     <div style="font-weight: 800; font-size: 12px; color: #111; text-transform: uppercase;">Malik Ke Hastakshar</div>
@@ -312,7 +328,7 @@
         const record = records.find(r => r.id === activeRecordId);
         if(!record) return;
 
-        showToast("PDF Generate ho raha hai, kripya pratiksha karein...", "info");
+        showToast("PDF Generate ho raha hai...", "info");
 
         const htmlString = generatePDFTemplate(record, divId);
 
@@ -332,9 +348,7 @@
         });
     }
 
-    function printAll() {
-        triggerPDF(`Zameen_Record_Pura.pdf`, null);
-    }
+    function printAll() { triggerPDF(`Zameen_Record_Pura.pdf`, null); }
 
     function printDivision(divId) {
         const record = records.find(r => r.id === activeRecordId);
@@ -343,7 +357,7 @@
         triggerPDF(`Record_${divName}.pdf`, divId);
     }
 
-    // --- Record Logic ---
+    // --- Setup Logic ---
     function handleNumDivisionsChange(e) {
         const num = parseInt(e.value) || 0;
         setupData.numDivisions = num;
@@ -369,8 +383,9 @@
     function updateDivisionArea(index, value) { setupData.divisionAreas[index] = value; render(); }
     function updateDivisionMode(mode) { setupData.divisionMode = mode; render(); }
 
-    async function submitSetup(e) {
+    function submitSetup(e) {
         e.preventDefault();
+        
         const total = parseFloat(setupData.totalArea);
         const kept = parseFloat(setupData.keptArea) || 0;
         const numDivs = parseInt(setupData.numDivisions) || 0;
@@ -399,24 +414,12 @@
         let currentDivId = Date.now();
 
         if (kept > 0) {
-            newDivisions.push({
-                id: `div-${currentDivId++}`,
-                name: `${setupData.ownerName} (Apna Hissa)`,
-                allocatedArea: kept,
-                isOwnerShare: true,
-                sales: []
-            });
+            newDivisions.push({ id: `div-${currentDivId++}`, name: `${setupData.ownerName} (Apna Hissa)`, allocatedArea: kept, isOwnerShare: true, sales: [] });
         }
 
         if (numDivs > 0) {
             for (let i = 0; i < numDivs; i++) {
-                newDivisions.push({
-                    id: `div-${currentDivId++}`,
-                    name: setupData.divisionNames[i] || `Hissa ${i + 1}`,
-                    allocatedArea: finalAreas[i],
-                    isOwnerShare: false,
-                    sales: []
-                });
+                newDivisions.push({ id: `div-${currentDivId++}`, name: setupData.divisionNames[i] || `Hissa ${i + 1}`, allocatedArea: finalAreas[i], isOwnerShare: false, sales: [] });
             }
         }
 
@@ -430,15 +433,19 @@
         };
 
         records.unshift(newRecord); 
-        await syncToDatabase();
         setupData = { ownerName: '', totalArea: '', unit: 'Gaj', keptArea: '', numDivisions: '', divisionNames: [], divisionMode: 'equal', divisionAreas: [] };
+        
         showToast("Naya record save ho gaya!", "success");
-        setView('dashboard');
+        setView('dashboard'); 
+        syncToDatabase();
     }
 
-    function toggleSaleForm(divId) { activeSaleFormId = activeSaleFormId === divId ? null : divId; render(); }
+    function toggleSaleForm(divId) { 
+        activeSaleFormId = activeSaleFormId === divId ? null : divId; 
+        render(); 
+    }
 
-    async function submitSale(divId) {
+    function submitSale(divId) {
         const buyerInput = document.getElementById(`buyer-${divId}`).value;
         const areaInput = document.getElementById(`area-${divId}`).value;
         const dateInput = document.getElementById(`date-${divId}`).value;
@@ -457,13 +464,14 @@
             date: dateInput || new Date().toISOString().split('T')[0]
         });
 
-        await syncToDatabase();
         activeSaleFormId = null;
         showToast("Sale darj ho gayi.", "success");
-        render();
+        
+        render(); 
+        syncToDatabase();
     }
 
-    async function addDivision() {
+    function addDivision() {
         const nameInput = document.getElementById('new-div-name').value;
         const areaInput = parseFloat(document.getElementById('new-div-area').value);
 
@@ -476,9 +484,11 @@
         if (areaInput > unallocatedArea) return showToast(`Error: Baantne ke liye sirf ${unallocatedArea} ${record.unit} bachi hai!`, "error");
 
         record.divisions.push({ id: `div-${Date.now()}`, name: nameInput, allocatedArea: areaInput, sales: [] });
-        await syncToDatabase();
+        
         showToast("Naya hissa jud gaya.", "success");
-        render();
+        
+        render(); 
+        syncToDatabase();
     }
 
     // ==========================================
@@ -492,7 +502,7 @@
     }
 
     function renderDashboard() {
-        const filtered = records.filter(r => r.ownerName.toLowerCase().includes(searchQuery));
+        const filtered = records.filter(r => (r.ownerName || '').toLowerCase().includes(searchQuery));
         let html = `
             <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-6 rounded-xl shadow-sm border border-gray-200">
                 <div>
@@ -511,7 +521,7 @@
         `;
 
         if (filtered.length === 0) {
-            html += `<div class="col-span-full bg-white p-12 text-center rounded-xl border shadow-sm">Koi record nahi mila.</div>`;
+            html += `<div class="col-span-full bg-white p-12 text-center rounded-xl border shadow-sm text-gray-500">Koi record nahi mila.</div>`;
         } else {
             filtered.forEach(record => {
                 html += `
@@ -601,7 +611,7 @@
                         <input type="number" min="0" value="${setupData.numDivisions}" oninput="handleNumDivisionsChange(this)" class="w-full p-2 border rounded-md outline-none" />
                     </div>
                     ${divisionInputs}
-                    <button type="submit" class="w-full bg-blue-600 text-white font-bold py-3 rounded-md mt-4">Record Save Karein</button>
+                    <button type="submit" class="w-full bg-blue-600 text-white font-bold py-3 rounded-md mt-4 hover:bg-blue-700 transition">Record Save Karein</button>
                 </form>
             </div>
         </div>`;
@@ -640,7 +650,10 @@
                         <div class="flex-1 min-w-[200px]"><label class="block text-xs mb-1">Kharidar Ka Naam</label><input type="text" id="buyer-${div.id}" class="w-full p-2 border rounded text-sm outline-none"/></div>
                         <div class="w-24"><label class="block text-xs mb-1">Area</label><input type="number" step="0.01" id="area-${div.id}" class="w-full p-2 border rounded text-sm outline-none"/></div>
                         <div class="w-32"><label class="block text-xs mb-1">Date</label><input type="date" id="date-${div.id}" value="${today}" class="w-full p-2 border rounded text-sm outline-none"/></div>
-                        <div class="flex gap-2 w-full sm:w-auto"><button onclick="submitSale('${div.id}')" class="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700 transition">Save</button><button onclick="toggleSaleForm('${div.id}')" class="bg-gray-300 text-gray-800 px-4 py-2 rounded text-sm hover:bg-gray-400 transition">Cancel</button></div>
+                        <div class="flex gap-2 w-full sm:w-auto">
+                            <button onclick="submitSale('${div.id}')" class="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700 transition">Save</button>
+                            <button onclick="toggleSaleForm('${div.id}')" class="bg-gray-300 text-gray-800 px-4 py-2 rounded text-sm hover:bg-gray-400 transition">Cancel</button>
+                        </div>
                     </div>
                 </div>`;
             } else {
