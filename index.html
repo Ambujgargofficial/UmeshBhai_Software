@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zameen Record Manager</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- html2pdf library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <style>
+        .print-only { display: none; }
+    </style>
+</head>
+<body class="bg-gray-50 font-sans min-h-screen">
+
+    <!-- Toast Notification -->
+    <div id="toast" class="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 px-6 py-3 rounded-lg shadow-lg text-white font-medium hidden transition-opacity duration-300">
+        <span id="toast-icon" class="mr-2"></span>
+        <span id="toast-message"></span>
+    </div>
+
+    <!-- Custom Confirm Modal -->
+    <div id="confirm-modal" class="fixed inset-0 bg-black bg-opacity-50 z-50 hidden justify-center items-center p-4 no-print">
+        <div class="bg-white rounded-xl shadow-xl max-w-sm w-full p-6">
+            <h3 id="confirm-title" class="text-xl font-bold text-gray-900 mb-2">Confirm</h3>
+            <p id="confirm-message" class="text-gray-600 mb-6">Kya aap sach mein delete karna chahte hain?</p>
+            <div class="flex gap-3 justify-end">
+                <button onclick="closeConfirm()" class="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 font-medium transition-colors">Cancel</button>
+                <button onclick="executeConfirm()" class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium shadow-sm transition-colors">Haan, Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="app" class="max-w-5xl mx-auto p-4 md:p-8 space-y-6">
+        <div class="text-center p-12 text-gray-500"><i class="fas fa-spinner fa-spin text-3xl"></i><p class="mt-4">Loading application...</p></div>
+    </div>
+
+<script>
+    // ==========================================
+    // 1. GOOGLE SHEETS CONFIGURATION
+    // ==========================================
+    const GOOGLE_SHEET_URL = "https://script.google.com/macros/s/AKfycbxokhD1c2jI2TkSVu1tCslOfqNDpCbfE4l49vkM4XVhGxK1O7ADJoadihrofl_RThcN/exec"; 
+
+    // ==========================================
+    // 2. STATE MANAGEMENT
+    // ==========================================
+    let records = [];
+    let currentView = 'dashboard';
+    let activeRecordId = null;
+    let searchQuery = '';
+    
+    let setupData = {
+        ownerName: '', totalArea: '', unit: 'Gaj', keptArea: '', numDivisions: '', divisionNames: [], divisionMode: 'equal', divisionAreas: []
+    };
+    let activeSaleFormId = null;
+
+    // ==========================================
+    // 3. INITIALIZATION & DATABASE
+    // ==========================================
+    async function init() {
+        if (GOOGLE_SHEET_URL.trim() !== "") {
+            showToast("Google Sheet se data laya ja raha hai...", "info");
+            try {
+                const response = await fetch(GOOGLE_SHEET_URL + "?action=getRecords");
+                const data = await response.json();
+                records = data || [];
+                showToast("Data safaltapurvak load ho gaya!", "success");
+            } catch (error) {
+                console.error("Error fetching from Google Sheets:", error);
+                showToast("Google Sheet se connect karne mein error.", "error");
+                setupSheetDemoData(); 
+            }
+        } else {
+            setupSheetDemoData();
+        }
+        render();
+    }
+
+    function setupSheetDemoData() {
+        records = [
+            {
+                id: "demo-1",
+                dateCreated: new Date().toISOString(),
+                ownerName: "Umesh",
+                totalArea: 500,
+                unit: "Gaj",
+                divisions: [
+                    { id: "div-1", name: "Hissa 1", allocatedArea: 250, isOwnerShare: false, sales: [] },
+                    { id: "div-2", name: "Hissa 2", allocatedArea: 250, isOwnerShare: false, sales: [] }
+                ]
+            }
+        ];
+        showToast("Demo Data load kiya gaya. Google Sheet URL link karein.", "info");
+    }
+
+    async function syncToGoogleSheets() {
+        if (GOOGLE_SHEET_URL.trim() === "") return; 
+        try {
+            await fetch(GOOGLE_SHEET_URL, {
+                redirect: "follow",
+                method: "POST",
+                headers: {
+                    "Content-Type": "text/plain;charset=utf-8",
+                },
+                body: JSON.stringify({ action: "saveRecords", records: records })
+            });
+        } catch (error) {
+            console.error("Error saving to Google Sheets:", error);
+            showToast("Data save karne mein connection error aayi.", "error");
+        }
+    }
+
+    // ==========================================
+    // 4. UI HELPERS & CUSTOM MODALS
+    // ==========================================
+    function showToast(message, type = "error") {
+        const toast = document.getElementById('toast');
+        const icon = document.getElementById('toast-icon');
+        const msg = document.getElementById('toast-message');
+        
+        toast.className = `fixed top-4 left-1/2 transform -translate-x-1/2 z-50 px-6 py-3 rounded-lg shadow-lg text-white font-medium transition-opacity duration-300 no-print`;
+        
+        if (type === 'error') {
+            toast.style.backgroundColor = '#ef4444';
+            icon.innerHTML = '<i class="fas fa-exclamation-circle"></i>';
+        } else if (type === 'success') {
+            toast.style.backgroundColor = '#22c55e';
+            icon.innerHTML = '<i class="fas fa-check-circle"></i>';
+        } else {
+            toast.style.backgroundColor = '#3b82f6';
+            icon.innerHTML = '<i class="fas fa-info-circle"></i>';
+        }
+        
+        msg.textContent = message;
+        toast.classList.remove('hidden');
+        setTimeout(() => toast.classList.add('hidden'), 4000);
+    }
+
+    let confirmActionCallback = null;
+    function showConfirm(title, message, callback) {
+        document.getElementById('confirm-title').innerText = title;
+        document.getElementById('confirm-message').innerText = message;
+        confirmActionCallback = callback;
+        
+        const modal = document.getElementById('confirm-modal');
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+    }
+
+    function closeConfirm() {
+        const modal = document.getElementById('confirm-modal');
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+        confirmActionCallback = null;
+    }
+
+    function executeConfirm() {
+        if (confirmActionCallback) confirmActionCallback();
+        closeConfirm();
+    }
+
+    function getRemainingArea(division) {
+        const totalSold = division.sales.reduce((sum, sale) => sum + parseFloat(sale.soldArea || 0), 0);
+        return parseFloat((division.allocatedArea - totalSold).toFixed(4));
+    }
+
+    function getOwnerRemainingArea(record) {
+        if (!record || !record.divisions) return 0;
+        const ownerDiv = record.divisions.find(d => d.isOwnerShare || d.name === `${record.ownerName} (Apna Hissa)`);
+        if (!ownerDiv) return 0; 
+        return getRemainingArea(ownerDiv);
+    }
+
+    // ==========================================
+    // 5. EVENT HANDLERS
+    // ==========================================
+    function setView(view, id = null) {
+        currentView = view;
+        activeRecordId = id;
+        render();
+    }
+
+    function handleSearch(e) {
+        searchQuery = e.target.value.toLowerCase();
+        renderDashboard(); 
+    }
+
+    function deleteRecord(id) {
+        showConfirm("Record Delete Karein?", "Kya aap sach mein is Mukhya Malik ke pure record ko hamesha ke liye delete karna chahte hain?", () => {
+            records = records.filter(r => r.id !== id);
+            syncToGoogleSheets();
+            showToast("Pura Record delete ho gaya.", "success");
+            render();
+        });
+    }
+
+    function deleteDivision(divId) {
+        showConfirm("Hissa Delete Karein?", "Kya aap sach mein is Hissedar aur iski saari sales ko delete karna chahte hain?", () => {
+            const record = records.find(r => r.id === activeRecordId);
+            record.divisions = record.divisions.filter(d => d.id !== divId);
+            syncToGoogleSheets();
+            showToast("Hissa delete ho gaya.", "success");
+            render();
+        });
+    }
+
+    function deleteSale(divId, saleId) {
+        showConfirm("Sale Delete Karein?", "Kya aap sach mein is Sale ko delete karna chahte hain?", () => {
+            const record = records.find(r => r.id === activeRecordId);
+            const division = record.divisions.find(d => d.id === divId);
+            division.sales = division.sales.filter(s => s.id !== saleId);
+            syncToGoogleSheets();
+            showToast("Sale delete ho gayi.", "success");
+            render();
+        });
+    }
+
+    // --- Core PDF Export Logic (SCALED FOR PERFECT A4 FIT) ---
+    function generatePDFTemplate(record, specificDivId = null) {
+        // FIXED: Width changed to 730px to guarantee it stays inside A4 margins.
+        // Padding and margins significantly tightened to fit 1 page.
+        let html = `
+        <div style="width: 730px; box-sizing: border-box; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #111; padding: 15px; background: #fff; margin: 0 auto;">
+            <div style="text-align: center; border-bottom: 2px solid #1f2937; padding-bottom: 10px; margin-bottom: 20px;">
+                <h1 style="margin: 0; font-size: 22px; font-weight: 800; text-transform: uppercase; color: #1f2937; letter-spacing: 1px;">Zameen Record / Invoice</h1>
+                <p style="margin: 4px 0 0 0; font-size: 12px; color: #6b7280; font-weight: 500;">Print Date: ${new Date().toLocaleDateString('en-IN')}</p>
+            </div>
+
+            <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px; background-color: #f9fafb; border: 1px solid #e5e7eb; table-layout: fixed;">
+                <tr>
+                    <td style="padding: 12px; border-right: 1px solid #e5e7eb; width: 40%; word-wrap: break-word;">
+                        <div style="font-size: 10px; color: #6b7280; font-weight: 700; text-transform: uppercase; margin-bottom: 4px;">Mukhya Malik (Owner)</div>
+                        <div style="font-size: 18px; font-weight: 800; color: #111;">${record.ownerName.toUpperCase()}</div>
+                    </td>
+                    <td style="padding: 12px; border-right: 1px solid #e5e7eb; width: 30%; word-wrap: break-word;">
+                        <div style="font-size: 10px; color: #6b7280; font-weight: 700; text-transform: uppercase; margin-bottom: 4px;">Kul Zameen (Total Area)</div>
+                        <div style="font-size: 16px; font-weight: 700; color: #111;">${record.totalArea} ${record.unit}</div>
+                    </td>
+                    <td style="padding: 12px; width: 30%; word-wrap: break-word;">
+                        <div style="font-size: 10px; color: #6b7280; font-weight: 700; text-transform: uppercase; margin-bottom: 4px;">Malik Ke Paas Bachi</div>
+                        <div style="font-size: 16px; font-weight: 700; color: #059669;">${getOwnerRemainingArea(record)} ${record.unit}</div>
+                    </td>
+                </tr>
+            </table>
+        `;
+
+        const divsToPrint = specificDivId 
+            ? record.divisions.filter(d => d.id === specificDivId) 
+            : record.divisions;
+
+        divsToPrint.forEach(div => {
+            const remaining = getRemainingArea(div);
+            const totalSold = div.sales ? div.sales.reduce((s, a) => s + parseFloat(a.soldArea), 0).toFixed(4) : 0;
+
+            // Tightened margins to prevent 2nd page spills
+            html += `
+            <div style="margin-bottom: 20px; page-break-inside: avoid; border: 1px solid #d1d5db; border-radius: 4px; overflow: hidden;">
+                <div style="display: flex; justify-content: space-between; align-items: center; background: #e5e7eb; padding: 10px 14px; border-bottom: 1px solid #d1d5db;">
+                    <div style="font-size: 16px; font-weight: 800; color: #1f2937; max-width: 45%; word-wrap: break-word;">${div.name}</div>
+                    <div style="font-size: 13px; color: #374151; text-align: right;">Mili Zameen: <span style="font-weight:700;">${div.allocatedArea} ${record.unit}</span> &nbsp;|&nbsp; Bachi Zameen: <span style="font-weight:700; color: ${remaining > 0 ? '#059669' : '#dc2626'};">${remaining} ${record.unit}</span></div>
+                </div>
+                <table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
+                    <thead>
+                        <tr style="background: #f9fafb;">
+                            <th style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb; padding: 8px 14px; text-align: left; font-size: 12px; color: #4b5563; text-transform: uppercase; width: 30%;">Tarik (Date)</th>
+                            <th style="border-bottom: 1px solid #d1d5db; border-right: 1px solid #e5e7eb; padding: 8px 14px; text-align: left; font-size: 12px; color: #4b5563; text-transform: uppercase; width: 45%;">Kharidar Ka Naam</th>
+                            <th style="border-bottom: 1px solid #d1d5db; padding: 8px 14px; text-align: right; font-size: 12px; color: #4b5563; text-transform: uppercase; width: 25%;">Bechi Zameen</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+
+            if (div.sales && div.sales.length > 0) {
+                div.sales.forEach(sale => {
+                    html += `
+                        <tr>
+                            <td style="border-bottom: 1px solid #e5e7eb; border-right: 1px solid #e5e7eb; padding: 8px 14px; font-size: 13px; color: #111; word-wrap: break-word;">${new Date(sale.date).toLocaleDateString('en-IN')}</td>
+                            <td style="border-bottom: 1px solid #e5e7eb; border-right: 1px solid #e5e7eb; padding: 8px 14px; font-size: 13px; color: #111; font-weight: 500; word-wrap: break-word;">${sale.buyerName}</td>
+                            <td style="border-bottom: 1px solid #e5e7eb; padding: 8px 14px; text-align: right; font-size: 13px; color: #dc2626; font-weight: 700; word-wrap: break-word;">-${sale.soldArea}</td>
+                        </tr>
+                    `;
+                });
+            } else {
+                html += `<tr><td colspan="3" style="border-bottom: 1px solid #e5e7eb; padding: 15px; text-align: center; color: #9ca3af; font-style: italic; font-size: 13px;">Abhi tak koi zameen nahi bechi gayi hai.</td></tr>`;
+            }
+
+            html += `
+                    </tbody>
+                    <tfoot>
+                        <tr style="background: #f3f4f6;">
+                            <td colspan="2" style="padding: 10px 14px; text-align: right; font-weight: 800; font-size: 13px; color: #1f2937; border-right: 1px solid #e5e7eb;">Kul Bechi Zameen:</td>
+                            <td style="padding: 10px 14px; text-align: right; font-weight: 800; font-size: 14px; color: #dc2626;">${totalSold} ${record.unit}</td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+            `;
+        });
+
+        html += `
+            <div style="margin-top: 30px; display: flex; justify-content: space-between; align-items: flex-end; page-break-inside: avoid; border-top: 1px solid #d1d5db; padding-top: 15px;">
+                <div style="font-size: 11px; color: #6b7280; font-weight: 500;">Official Record generated automatically via App.</div>
+                <div style="text-align: center; width: 200px;">
+                    <div style="border-bottom: 1px solid #111; height: 30px; margin-bottom: 6px;"></div>
+                    <div style="font-weight: 800; font-size: 12px; color: #111; text-transform: uppercase;">Malik Ke Hastakshar</div>
+                </div>
+            </div>
+        </div>
+        `;
+        return html;
+    }
+
+    function triggerPDF(filename, divId = null) {
+        const record = records.find(r => r.id === activeRecordId);
+        if(!record) return;
+
+        showToast("PDF Generate ho raha hai, kripya pratiksha karein...", "info");
+
+        // Pass the perfectly sized HTML string directly to html2pdf
+        const htmlString = generatePDFTemplate(record, divId);
+
+        const opt = {
+            margin:       0.2, // Reduced margins to give more breathing room
+            filename:     filename,
+            image:        { type: 'jpeg', quality: 1 },
+            html2canvas:  { scale: 2, useCORS: true },
+            jsPDF:        { unit: 'in', format: 'a4', orientation: 'portrait' }
+        };
+
+        html2pdf().set(opt).from(htmlString).save().then(() => {
+            showToast("PDF Download ho gaya!", "success");
+        }).catch(err => {
+            showToast("PDF banane mein error aayi.", "error");
+            console.error(err);
+        });
+    }
+
+    function printAll() {
+        triggerPDF(`Zameen_Record_Pura.pdf`, null);
+    }
+
+    function printDivision(divId) {
+        const record = records.find(r => r.id === activeRecordId);
+        const division = record.divisions.find(d => d.id === divId);
+        const divName = division ? division.name.replace(/[^a-z0-9]/gi, '_') : 'Hissa';
+        triggerPDF(`Record_${divName}.pdf`, divId);
+    }
+
+    // --- Record Logic ---
+    function handleNumDivisionsChange(e) {
+        const num = parseInt(e.value) || 0;
+        setupData.numDivisions = num;
+        const currentNames = [...setupData.divisionNames];
+        const currentAreas = [...setupData.divisionAreas];
+        
+        if (num > currentNames.length) {
+            for (let i = currentNames.length; i < num; i++) {
+                currentNames.push('');
+                currentAreas.push('');
+            }
+        } else if (num < currentNames.length) {
+            currentNames.length = num;
+            currentAreas.length = num;
+        }
+        setupData.divisionNames = currentNames;
+        setupData.divisionAreas = currentAreas;
+        render(); 
+    }
+
+    function updateSetupData(field, value) { setupData[field] = value; }
+    function updateDivisionName(index, value) { setupData.divisionNames[index] = value; }
+    function updateDivisionArea(index, value) { setupData.divisionAreas[index] = value; render(); }
+    function updateDivisionMode(mode) { setupData.divisionMode = mode; render(); }
+
+    async function submitSetup(e) {
+        e.preventDefault();
+        const total = parseFloat(setupData.totalArea);
+        const kept = parseFloat(setupData.keptArea) || 0;
+        const numDivs = parseInt(setupData.numDivisions) || 0;
+        const remainingArea = total - kept;
+
+        if (!setupData.ownerName || isNaN(total) || total <= 0) return showToast("Kripya malik ka naam aur sahi kul zameen bharein.", "error");
+        if (kept > total) return showToast("Apne paas rokne wali zameen kul zameen se zyada nahi ho sakti.", "error");
+
+        let finalAreas = [];
+        if (numDivs > 0) {
+            if (setupData.divisionMode === 'equal') {
+                const areaPerDiv = parseFloat((remainingArea / numDivs).toFixed(4));
+                for(let i=0; i<numDivs; i++) finalAreas.push(areaPerDiv);
+            } else {
+                let customSum = 0;
+                for(let i=0; i<numDivs; i++) {
+                    const area = parseFloat(setupData.divisionAreas[i]) || 0;
+                    customSum += area;
+                    finalAreas.push(area);
+                }
+                if (customSum > remainingArea + 0.0001) return showToast("Error: Custom hisso ka total bachi zameen se zyada hai!", "error");
+            }
+        }
+
+        const newDivisions = [];
+        let currentDivId = Date.now();
+
+        if (kept > 0) {
+            newDivisions.push({
+                id: `div-${currentDivId++}`,
+                name: `${setupData.ownerName} (Apna Hissa)`,
+                allocatedArea: kept,
+                isOwnerShare: true,
+                sales: []
+            });
+        }
+
+        if (numDivs > 0) {
+            for (let i = 0; i < numDivs; i++) {
+                newDivisions.push({
+                    id: `div-${currentDivId++}`,
+                    name: setupData.divisionNames[i] || `Hissa ${i + 1}`,
+                    allocatedArea: finalAreas[i],
+                    isOwnerShare: false,
+                    sales: []
+                });
+            }
+        }
+
+        const newRecord = {
+            id: `rec-${Date.now()}`,
+            dateCreated: new Date().toISOString(),
+            ownerName: setupData.ownerName,
+            totalArea: total,
+            unit: setupData.unit,
+            divisions: newDivisions
+        };
+
+        records.unshift(newRecord); 
+        await syncToGoogleSheets();
+        setupData = { ownerName: '', totalArea: '', unit: 'Gaj', keptArea: '', numDivisions: '', divisionNames: [], divisionMode: 'equal', divisionAreas: [] };
+        showToast("Naya record save ho gaya!", "success");
+        setView('dashboard');
+    }
+
+    function toggleSaleForm(divId) { activeSaleFormId = activeSaleFormId === divId ? null : divId; render(); }
+
+    async function submitSale(divId) {
+        const buyerInput = document.getElementById(`buyer-${divId}`).value;
+        const areaInput = document.getElementById(`area-${divId}`).value;
+        const dateInput = document.getElementById(`date-${divId}`).value;
+
+        if (!buyerInput || !areaInput) return showToast("Kripya kharidar ka naam aur area bharein.", "error");
+
+        const record = records.find(r => r.id === activeRecordId);
+        const division = record.divisions.find(d => d.id === divId);
+        
+        if (parseFloat(areaInput) > getRemainingArea(division)) return showToast("Error: Bechi zameen bachi zameen se zyada nahi ho sakti!", "error");
+
+        division.sales.push({
+            id: `sale-${Date.now()}`,
+            buyerName: buyerInput,
+            soldArea: parseFloat(areaInput),
+            date: dateInput || new Date().toISOString().split('T')[0]
+        });
+
+        await syncToGoogleSheets();
+        activeSaleFormId = null;
+        showToast("Sale darj ho gayi.", "success");
+        render();
+    }
+
+    async function addDivision() {
+        const nameInput = document.getElementById('new-div-name').value;
+        const areaInput = parseFloat(document.getElementById('new-div-area').value);
+
+        if (!nameInput || isNaN(areaInput) || areaInput <= 0) return showToast("Kripya sahi naam aur area bharein.", "error");
+
+        const record = records.find(r => r.id === activeRecordId);
+        const totalAllocated = record.divisions.reduce((sum, div) => sum + parseFloat(div.allocatedArea || 0), 0);
+        const unallocatedArea = parseFloat((record.totalArea - totalAllocated).toFixed(4));
+
+        if (areaInput > unallocatedArea) return showToast(`Error: Baantne ke liye sirf ${unallocatedArea} ${record.unit} bachi hai!`, "error");
+
+        record.divisions.push({ id: `div-${Date.now()}`, name: nameInput, allocatedArea: areaInput, sales: [] });
+        await syncToGoogleSheets();
+        showToast("Naya hissa jud gaya.", "success");
+        render();
+    }
+
+    // ==========================================
+    // 6. RENDER ENGINE
+    // ==========================================
+    function render() {
+        const app = document.getElementById('app');
+        if (currentView === 'dashboard') app.innerHTML = renderDashboard();
+        else if (currentView === 'setup') app.innerHTML = renderSetup();
+        else if (currentView === 'detail') app.innerHTML = renderDetail();
+    }
+
+    function renderDashboard() {
+        const filtered = records.filter(r => r.ownerName.toLowerCase().includes(searchQuery));
+        let html = `
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+                <div>
+                    <h1 class="text-2xl font-bold text-gray-800 flex items-center gap-2"><i class="fas fa-map text-blue-600"></i> Zameen Dashboard</h1>
+                    <p class="text-gray-500 text-sm mt-1">Apne sabhi zameen ke records yahan dekhein</p>
+                </div>
+                <button onclick="setView('setup')" class="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg shadow-md transition-colors font-medium w-full md:w-auto justify-center">
+                    <i class="fas fa-plus"></i> Naya Record Banayein
+                </button>
+            </div>
+            <div class="relative mt-6">
+                <i class="fas fa-search absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400"></i>
+                <input type="text" placeholder="Malik ka naam likhkar khojein (Search owner)..." value="${searchQuery}" onkeyup="handleSearch(event)" class="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-300 shadow-sm outline-none" />
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mt-6">
+        `;
+
+        if (filtered.length === 0) {
+            html += `<div class="col-span-full bg-white p-12 text-center rounded-xl border shadow-sm">Koi record nahi mila.</div>`;
+        } else {
+            filtered.forEach(record => {
+                html += `
+                <div class="bg-white rounded-xl shadow-sm border border-gray-200 hover:shadow-md flex flex-col">
+                    <div class="p-5 border-b border-gray-100 flex-grow">
+                        <div class="flex justify-between items-start mb-4">
+                            <div class="flex items-center gap-2">
+                                <div class="bg-blue-100 text-blue-700 w-10 h-10 rounded-full flex items-center justify-center"><i class="fas fa-user"></i></div>
+                                <h3 class="text-xl font-bold text-gray-800 line-clamp-1">${record.ownerName}</h3>
+                            </div>
+                            <button onclick="deleteRecord('${record.id}')" class="text-gray-400 hover:text-red-600 p-2 rounded hover:bg-red-50 transition-colors"><i class="fas fa-trash-alt"></i></button>
+                        </div>
+                        <div class="space-y-2 text-sm">
+                            <div class="flex justify-between"><span>Kul Zameen:</span> <span class="font-semibold text-gray-800">${record.totalArea} ${record.unit}</span></div>
+                            <div class="flex justify-between"><span>Malik Ke Paas Bachi:</span> <span class="font-semibold ${getOwnerRemainingArea(record) > 0 ? 'text-green-600' : 'text-gray-500'}">${getOwnerRemainingArea(record)} ${record.unit}</span></div>
+                        </div>
+                    </div>
+                    <div class="bg-gray-50 px-5 py-3 border-t border-gray-100">
+                        <button onclick="setView('detail', '${record.id}')" class="w-full text-blue-600 font-medium hover:text-blue-800">Pura Record Dekhein <i class="fas fa-chevron-right text-xs"></i></button>
+                    </div>
+                </div>`;
+            });
+        }
+        return html + `</div>`;
+    }
+
+    function renderSetup() {
+        let divisionInputs = '';
+        if (setupData.numDivisions > 0) {
+            divisionInputs += `
+            <div class="space-y-4 mt-4 p-4 bg-gray-50 border border-gray-200 rounded-lg">
+                <div class="flex justify-between items-center border-b pb-3">
+                    <h3 class="font-semibold text-gray-700 text-sm">Hissedaron Ki Details:</h3>
+                    <div class="flex gap-4">
+                        <label class="text-sm cursor-pointer"><input type="radio" name="divMode" value="equal" ${setupData.divisionMode === 'equal' ? 'checked' : ''} onchange="updateDivisionMode('equal')"> Barabar</label>
+                        <label class="text-sm cursor-pointer"><input type="radio" name="divMode" value="custom" ${setupData.divisionMode === 'custom' ? 'checked' : ''} onchange="updateDivisionMode('custom')"> Custom</label>
+                    </div>
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">`;
+                
+            for(let i=0; i < setupData.numDivisions; i++) {
+                let customAreaInput = setupData.divisionMode === 'custom' ? `
+                    <div class="mt-2">
+                        <label class="block text-xs text-gray-600 mb-1">Kitni Zameen (${setupData.unit})?</label>
+                        <input required type="number" step="0.01" value="${setupData.divisionAreas[i] || ''}" oninput="updateDivisionArea(${i}, this.value)" class="w-full p-2 border rounded-md outline-none" />
+                    </div>` : '';
+
+                divisionInputs += `
+                    <div class="bg-white p-3 border rounded-md shadow-sm">
+                        <label class="block text-xs text-gray-600 mb-1">Hissedar ${i + 1} Ka Naam</label>
+                        <input required type="text" value="${setupData.divisionNames[i] || ''}" oninput="updateDivisionName(${i}, this.value)" class="w-full p-2 border rounded-md outline-none" />
+                        ${customAreaInput}
+                    </div>`;
+            }
+            divisionInputs += `</div></div>`;
+        }
+
+        return `
+        <div class="flex items-center justify-center min-h-[80vh]">
+            <div class="bg-white p-6 md:p-8 rounded-xl shadow-lg max-w-lg w-full border-t-4 border-blue-600">
+                <button onclick="setView('dashboard')" class="text-gray-500 hover:text-gray-800 mb-6"><i class="fas fa-arrow-left"></i> Wapas List Par Jayein</button>
+                <div class="text-center mb-6"><h1 class="text-2xl font-bold text-gray-800">Naya Zameen Record</h1></div>
+                <form onsubmit="submitSetup(event)" class="space-y-4">
+                    <div>
+                        <label class="block text-sm text-gray-700 mb-1">Mukhya Malik Ka Naam</label>
+                        <input required type="text" value="${setupData.ownerName}" oninput="updateSetupData('ownerName', this.value)" class="w-full p-2 border rounded-md outline-none" />
+                    </div>
+                    <div class="flex gap-4">
+                        <div class="w-2/3">
+                            <label class="block text-sm text-gray-700 mb-1">Kul Zameen (Total Area)</label>
+                            <input required type="number" step="0.01" value="${setupData.totalArea}" oninput="updateSetupData('totalArea', this.value)" class="w-full p-2 border rounded-md outline-none" />
+                        </div>
+                        <div class="w-1/3">
+                            <label class="block text-sm text-gray-700 mb-1">Ikai (Unit)</label>
+                            <select value="${setupData.unit}" onchange="updateSetupData('unit', this.value)" class="w-full p-2 border rounded-md outline-none">
+                                <option value="Gaj" ${setupData.unit === 'Gaj' ? 'selected':''}>Gaj</option>
+                                <option value="Hectare" ${setupData.unit === 'Hectare' ? 'selected':''}>Hectare</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-700 mb-1">Apne Paas Rokne Wali Zameen (Optional)</label>
+                        <input type="number" step="0.01" value="${setupData.keptArea}" oninput="updateSetupData('keptArea', this.value)" class="w-full p-2 border rounded-md outline-none" />
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-700 mb-1">Bachi Zameen Ke Kitne Hisse Karne Hain?</label>
+                        <input type="number" min="0" value="${setupData.numDivisions}" oninput="handleNumDivisionsChange(this)" class="w-full p-2 border rounded-md outline-none" />
+                    </div>
+                    ${divisionInputs}
+                    <button type="submit" class="w-full bg-blue-600 text-white font-bold py-3 rounded-md mt-4">Record Save Karein</button>
+                </form>
+            </div>
+        </div>`;
+    }
+
+    function renderDetail() {
+        const record = records.find(r => r.id === activeRecordId);
+        if(!record) return `<div class="text-center p-8">Record nahi mila</div>`;
+
+        let divisionsHtml = '';
+        record.divisions.forEach(div => {
+            let salesRows = '';
+            if (div.sales && div.sales.length > 0) {
+                div.sales.forEach(sale => {
+                    salesRows += `
+                    <tr class="hover:bg-gray-50 border-b border-gray-100">
+                        <td class="py-2 px-4">${new Date(sale.date).toLocaleDateString('en-IN')}</td>
+                        <td class="font-medium text-gray-800 px-4">${sale.buyerName}</td>
+                        <td class="text-red-600 font-medium text-right px-4">-${sale.soldArea}</td>
+                        <td class="text-center"><button onclick="deleteSale('${div.id}', '${sale.id}')" class="text-red-400 hover:text-red-600 p-2"><i class="fas fa-trash-alt"></i></button></td>
+                    </tr>`;
+                });
+            } else {
+                salesRows = `<tr><td colspan="4" class="py-4 text-center text-gray-400 italic">Abhi tak koi zameen nahi bechi gayi hai.</td></tr>`;
+            }
+
+            const totalSold = div.sales ? div.sales.reduce((s, a) => s + parseFloat(a.soldArea), 0).toFixed(4) : 0;
+            const remaining = getRemainingArea(div);
+            
+            let saleFormHtml = '';
+            if (activeSaleFormId === div.id) {
+                const today = new Date().toISOString().split('T')[0];
+                saleFormHtml = `
+                <div class="bg-blue-50 p-4 rounded-lg border border-blue-100 mt-4">
+                    <div class="flex flex-wrap gap-3 items-end">
+                        <div class="flex-1 min-w-[200px]"><label class="block text-xs mb-1">Kharidar Ka Naam</label><input type="text" id="buyer-${div.id}" class="w-full p-2 border rounded text-sm outline-none"/></div>
+                        <div class="w-24"><label class="block text-xs mb-1">Area</label><input type="number" step="0.01" id="area-${div.id}" class="w-full p-2 border rounded text-sm outline-none"/></div>
+                        <div class="w-32"><label class="block text-xs mb-1">Date</label><input type="date" id="date-${div.id}" value="${today}" class="w-full p-2 border rounded text-sm outline-none"/></div>
+                        <div class="flex gap-2 w-full sm:w-auto"><button onclick="submitSale('${div.id}')" class="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700 transition">Save</button><button onclick="toggleSaleForm('${div.id}')" class="bg-gray-300 text-gray-800 px-4 py-2 rounded text-sm hover:bg-gray-400 transition">Cancel</button></div>
+                    </div>
+                </div>`;
+            } else {
+                saleFormHtml = `<button onclick="toggleSaleForm('${div.id}')" ${remaining <= 0 ? 'disabled' : ''} class="mt-4 text-sm px-4 py-2 rounded font-medium ${remaining <= 0 ? 'bg-gray-100 text-gray-400 border' : 'bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 transition'}">+ Zameen Bechein (Add Sale)</button>`;
+            }
+
+            divisionsHtml += `
+            <div class="bg-white rounded-xl shadow-sm border border-gray-200 mb-6 relative">
+                <div class="bg-gray-50 px-6 py-4 border-b flex justify-between items-center rounded-t-xl">
+                    <div class="flex items-center gap-3">
+                        <div class="bg-blue-100 text-blue-700 w-8 h-8 rounded-full flex items-center justify-center"><i class="fas fa-file-contract"></i></div>
+                        <div>
+                            <h3 class="text-lg font-bold text-gray-800 m-0">${div.name}</h3>
+                            <span class="text-sm text-gray-500">Mili Zameen: <strong>${div.allocatedArea} ${record.unit}</strong></span>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <div class="text-right mr-2">
+                            <span class="text-sm text-gray-500 block">Bachi Zameen</span>
+                            <span class="text-lg font-bold ${remaining > 0 ? 'text-green-600' : 'text-red-500'}">${remaining} ${record.unit}</span>
+                        </div>
+                        <button onclick="printDivision('${div.id}')" class="text-blue-600 hover:text-blue-800 px-3 py-1.5 border border-blue-200 rounded-md bg-white text-sm shadow-sm transition"><i class="fas fa-print"></i> PDF</button>
+                        <button onclick="deleteDivision('${div.id}')" class="text-red-400 hover:text-red-600 p-2 border border-red-100 rounded-md bg-white transition"><i class="fas fa-trash-alt"></i></button>
+                    </div>
+                </div>
+                <div class="p-6">
+                    <table class="w-full text-sm text-left border rounded-lg overflow-hidden">
+                        <thead class="bg-gray-50 text-gray-600 border-b">
+                            <tr>
+                                <th class="py-2 px-4 font-semibold">Tarik (Date)</th>
+                                <th class="py-2 px-4 font-semibold">Kharidar Ka Naam</th>
+                                <th class="py-2 px-4 font-semibold text-right">Bechi Zameen</th>
+                                <th class="py-2 px-4 text-center">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>${salesRows}</tbody>
+                        <tfoot class="bg-gray-50 border-t">
+                            <tr>
+                                <td colspan="2" class="py-2 px-4 font-bold text-right text-gray-700">Kul Bechi Zameen:</td>
+                                <td class="py-2 px-4 font-bold text-red-600 text-right">${totalSold} ${record.unit}</td>
+                                <td></td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                    ${saleFormHtml}
+                </div>
+            </div>`;
+        });
+
+        const totalAllocated = record.divisions.reduce((sum, div) => sum + parseFloat(div.allocatedArea || 0), 0);
+        const unallocatedArea = parseFloat((record.totalArea - totalAllocated).toFixed(4));
+
+        return `
+        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-4 rounded-xl shadow-sm border mb-6">
+            <button onclick="setView('dashboard')" class="text-gray-600 font-medium hover:text-blue-600 transition"><i class="fas fa-home"></i> Dashboard</button>
+            <button onclick="printAll()" class="bg-blue-600 text-white px-5 py-2.5 rounded-lg shadow-sm font-medium hover:bg-blue-700 transition"><i class="fas fa-print"></i> Pura Record Print Nikalein</button>
+        </div>
+
+        <div class="bg-white rounded-xl shadow-md p-6 border-l-4 border-blue-600 mb-6">
+            <div class="flex items-center gap-2 text-2xl font-bold mb-4 pb-4 border-b">
+                <i class="fas fa-user text-blue-500"></i> ${record.ownerName.toUpperCase()}
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div><p class="text-sm text-gray-500 font-semibold uppercase mb-1">Kul Zameen</p><div class="text-xl font-bold">${record.totalArea} ${record.unit}</div></div>
+                <div><p class="text-sm text-gray-500 font-semibold uppercase mb-1">Malik Ke Paas Bachi</p><div class="text-xl font-bold text-green-600 bg-green-50 inline-block px-3 py-1 rounded-md">${getOwnerRemainingArea(record)} ${record.unit}</div></div>
+            </div>
+        </div>
+
+        <h2 class="text-xl font-bold border-b-2 pb-2 mb-4 mt-8">Zameen Ke Hisse Aur Sale Record</h2>
+
+        <div id="add-division-section" class="bg-gray-100 p-4 rounded-lg flex flex-wrap gap-4 items-end mb-8">
+            <div class="w-full text-sm font-semibold text-gray-700">Baantne Ke Liye Bachi: <span class="${unallocatedArea > 0 ? 'text-green-600' : 'text-red-500'}">${unallocatedArea} ${record.unit}</span></div>
+            <div class="flex-1 min-w-[200px]"><label class="block text-sm mb-1">Naya Hissedar Naam</label><input type="text" id="new-div-name" class="w-full border border-gray-300 p-2 rounded outline-none focus:border-blue-500" ${unallocatedArea <= 0 ? 'disabled' : ''} /></div>
+            <div class="w-32"><label class="block text-sm mb-1">Area</label><input type="number" step="0.01" id="new-div-area" class="w-full border border-gray-300 p-2 rounded outline-none focus:border-blue-500" ${unallocatedArea <= 0 ? 'disabled' : ''} /></div>
+            <button onclick="addDivision()" class="bg-gray-800 hover:bg-gray-900 text-white px-5 py-2 rounded shadow-sm transition" ${unallocatedArea <= 0 ? 'disabled' : ''}>Hissa Jodein</button>
+        </div>
+
+        <div>${divisionsHtml}</div>`;
+    }
+
+    window.onload = init;
+</script>
+</body>
+</html>
