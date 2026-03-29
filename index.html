@@ -38,9 +38,9 @@
 
 <script>
     // ==========================================
-    // 1. GOOGLE SHEETS CONFIGURATION
+    // 1. DATABASE CONFIGURATION
     // ==========================================
-    const GOOGLE_SHEET_URL = "https://script.google.com/macros/s/AKfycbxokhD1c2jI2TkSVu1tCslOfqNDpCbfE4l49vkM4XVhGxK1O7ADJoadihrofl_RThcN/exec"; 
+    const DB_SYNC_URL = "https://script.google.com/macros/s/AKfycbxokhD1c2jI2TkSVu1tCslOfqNDpCbfE4l49vkM4XVhGxK1O7ADJoadihrofl_RThcN/exec"; 
 
     // ==========================================
     // 2. STATE MANAGEMENT
@@ -59,16 +59,16 @@
     // 3. INITIALIZATION & DATABASE
     // ==========================================
     async function init() {
-        if (GOOGLE_SHEET_URL.trim() !== "") {
-            showToast("Google Sheet se data laya ja raha hai...", "info");
+        if (DB_SYNC_URL.trim() !== "") {
+            showToast("Data sync ho raha hai...", "info");
             try {
-                const response = await fetch(GOOGLE_SHEET_URL + "?action=getRecords");
+                const response = await fetch(DB_SYNC_URL + "?action=getRecords");
                 const data = await response.json();
                 records = data || [];
                 showToast("Data safaltapurvak load ho gaya!", "success");
             } catch (error) {
-                console.error("Error fetching from Google Sheets:", error);
-                showToast("Google Sheet se connect karne mein error.", "error");
+                console.error("Error fetching data:", error);
+                showToast("Server se connect karne mein error.", "error");
                 setupSheetDemoData(); 
             }
         } else {
@@ -91,13 +91,13 @@
                 ]
             }
         ];
-        showToast("Demo Data load kiya gaya. Google Sheet URL link karein.", "info");
+        showToast("Demo Data load kiya gaya.", "info");
     }
 
-    async function syncToGoogleSheets() {
-        if (GOOGLE_SHEET_URL.trim() === "") return; 
+    async function syncToDatabase() {
+        if (DB_SYNC_URL.trim() === "") return; 
         try {
-            await fetch(GOOGLE_SHEET_URL, {
+            await fetch(DB_SYNC_URL, {
                 redirect: "follow",
                 method: "POST",
                 headers: {
@@ -106,7 +106,7 @@
                 body: JSON.stringify({ action: "saveRecords", records: records })
             });
         } catch (error) {
-            console.error("Error saving to Google Sheets:", error);
+            console.error("Error saving data:", error);
             showToast("Data save karne mein connection error aayi.", "error");
         }
     }
@@ -189,7 +189,7 @@
     function deleteRecord(id) {
         showConfirm("Record Delete Karein?", "Kya aap sach mein is Mukhya Malik ke pure record ko hamesha ke liye delete karna chahte hain?", () => {
             records = records.filter(r => r.id !== id);
-            syncToGoogleSheets();
+            syncToDatabase();
             showToast("Pura Record delete ho gaya.", "success");
             render();
         });
@@ -199,7 +199,7 @@
         showConfirm("Hissa Delete Karein?", "Kya aap sach mein is Hissedar aur iski saari sales ko delete karna chahte hain?", () => {
             const record = records.find(r => r.id === activeRecordId);
             record.divisions = record.divisions.filter(d => d.id !== divId);
-            syncToGoogleSheets();
+            syncToDatabase();
             showToast("Hissa delete ho gaya.", "success");
             render();
         });
@@ -210,16 +210,14 @@
             const record = records.find(r => r.id === activeRecordId);
             const division = record.divisions.find(d => d.id === divId);
             division.sales = division.sales.filter(s => s.id !== saleId);
-            syncToGoogleSheets();
+            syncToDatabase();
             showToast("Sale delete ho gayi.", "success");
             render();
         });
     }
 
-    // --- Core PDF Export Logic (SCALED FOR PERFECT A4 FIT) ---
+    // --- Core PDF Export Logic (PERFECT LEDGER DESIGN FIXED CROP) ---
     function generatePDFTemplate(record, specificDivId = null) {
-        // FIXED: Width changed to 730px to guarantee it stays inside A4 margins.
-        // Padding and margins significantly tightened to fit 1 page.
         let html = `
         <div style="width: 730px; box-sizing: border-box; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #111; padding: 15px; background: #fff; margin: 0 auto;">
             <div style="text-align: center; border-bottom: 2px solid #1f2937; padding-bottom: 10px; margin-bottom: 20px;">
@@ -253,7 +251,6 @@
             const remaining = getRemainingArea(div);
             const totalSold = div.sales ? div.sales.reduce((s, a) => s + parseFloat(a.soldArea), 0).toFixed(4) : 0;
 
-            // Tightened margins to prevent 2nd page spills
             html += `
             <div style="margin-bottom: 20px; page-break-inside: avoid; border: 1px solid #d1d5db; border-radius: 4px; overflow: hidden;">
                 <div style="display: flex; justify-content: space-between; align-items: center; background: #e5e7eb; padding: 10px 14px; border-bottom: 1px solid #d1d5db;">
@@ -317,11 +314,10 @@
 
         showToast("PDF Generate ho raha hai, kripya pratiksha karein...", "info");
 
-        // Pass the perfectly sized HTML string directly to html2pdf
         const htmlString = generatePDFTemplate(record, divId);
 
         const opt = {
-            margin:       0.2, // Reduced margins to give more breathing room
+            margin:       0.2, 
             filename:     filename,
             image:        { type: 'jpeg', quality: 1 },
             html2canvas:  { scale: 2, useCORS: true },
@@ -434,7 +430,7 @@
         };
 
         records.unshift(newRecord); 
-        await syncToGoogleSheets();
+        await syncToDatabase();
         setupData = { ownerName: '', totalArea: '', unit: 'Gaj', keptArea: '', numDivisions: '', divisionNames: [], divisionMode: 'equal', divisionAreas: [] };
         showToast("Naya record save ho gaya!", "success");
         setView('dashboard');
@@ -461,7 +457,7 @@
             date: dateInput || new Date().toISOString().split('T')[0]
         });
 
-        await syncToGoogleSheets();
+        await syncToDatabase();
         activeSaleFormId = null;
         showToast("Sale darj ho gayi.", "success");
         render();
@@ -480,7 +476,7 @@
         if (areaInput > unallocatedArea) return showToast(`Error: Baantne ke liye sirf ${unallocatedArea} ${record.unit} bachi hai!`, "error");
 
         record.divisions.push({ id: `div-${Date.now()}`, name: nameInput, allocatedArea: areaInput, sales: [] });
-        await syncToGoogleSheets();
+        await syncToDatabase();
         showToast("Naya hissa jud gaya.", "success");
         render();
     }
