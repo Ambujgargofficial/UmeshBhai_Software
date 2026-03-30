@@ -32,6 +32,11 @@
         </div>
     </div>
 
+    <!-- Floating Global Sync Status -->
+    <div id="global-sync-status" class="fixed bottom-4 right-4 bg-white shadow-md border border-gray-200 px-4 py-2 rounded-full text-sm font-medium z-50 hidden transition-opacity items-center gap-2">
+        <!-- JS injects sync message here -->
+    </div>
+
     <div id="app" class="max-w-5xl mx-auto p-4 md:p-8 space-y-6">
         <div class="text-center p-12 text-gray-500"><i class="fas fa-spinner fa-spin text-3xl"></i><p class="mt-4">App start ho rahi hai...</p></div>
     </div>
@@ -40,7 +45,7 @@
     // ==========================================
     // 1. DATABASE CONFIGURATION
     // ==========================================
-    const DB_SYNC_URL = "https://script.google.com/macros/s/AKfycbxokhD1c2jI2TkSVu1tCslOfqNDpCbfE4l49vkM4XVhGxK1O7ADJoadihrofl_RThcN/exec"; 
+    const DB_SYNC_URL = "https://script.google.com/macros/s/AKfycbxTlmZDsrhytJtpgHCantkwYaVx4Fh8P2GFEFHKd_P5_pxEl6GVDo6FFsj7_NISfcU9/exec"; 
 
     // ==========================================
     // 2. STATE MANAGEMENT
@@ -49,7 +54,7 @@
     let currentView = 'dashboard';
     let activeRecordId = null;
     let searchQuery = '';
-    let isProcessing = false; // Prevents double-clicks
+    let isProcessing = false; // Double click block
     
     let setupData = {
         ownerName: '', totalArea: '', unit: 'Gaj', keptArea: '', numDivisions: '', divisionNames: [], divisionMode: 'equal', divisionAreas: []
@@ -61,51 +66,77 @@
     // ==========================================
     function init() {
         render(); // Instantly show UI
-        loadFromDatabase(); // Quietly fetch data
+        loadFromDatabase(); 
     }
 
     async function loadFromDatabase() {
         if (DB_SYNC_URL.trim() === "") return;
         try {
-            // Standard fetch without artificial timeouts
-            const response = await fetch(DB_SYNC_URL + "?action=getRecords");
+            // CACHE BUSTER: Added ?t=timestamp to absolutely prevent browser from loading old data!
+            const cacheBuster = new Date().getTime();
+            const fetchUrl = DB_SYNC_URL + "?action=getRecords&t=" + cacheBuster;
+            
+            const response = await fetch(fetchUrl, { cache: "no-store" });
             const textData = await response.text();
             
             try {
                 const parsed = JSON.parse(textData);
-                if (Array.isArray(parsed) && parsed.length > 0) {
+                // Allow empty array to clear screen if records are deleted from sheet
+                if (Array.isArray(parsed)) {
                     records = parsed;
                     if(currentView === 'dashboard') {
                         render(); 
                     }
                 }
             } catch(e) {
-                console.error("No valid data found or DB is empty.");
+                console.error("Data empty ya corrupted hai.");
             }
         } catch (error) {
             console.error("Fetch error:", error);
-            showToast("Data fetch karne mein error aayi. Offline mode.", "error");
+            showToast("Data lane mein network problem aayi.", "error");
         }
     }
 
-    // Fire-and-forget sync (Perfectly configured to bypass CORS and save properly)
+    function showSyncStatus(status) {
+        const syncEl = document.getElementById('global-sync-status');
+        if(!syncEl) return;
+        
+        syncEl.classList.remove('hidden');
+        syncEl.classList.add('flex');
+        
+        if (status === 'saving') {
+            syncEl.innerHTML = '<i class="fas fa-circle-notch fa-spin text-blue-500"></i> <span class="text-gray-700">Cloud mein save ho raha hai...</span>';
+        } else if (status === 'success') {
+            syncEl.innerHTML = '<i class="fas fa-check-circle text-green-500"></i> <span class="text-gray-700">Saved successfully</span>';
+            setTimeout(() => {
+                syncEl.classList.add('hidden');
+                syncEl.classList.remove('flex');
+            }, 3000);
+        } else if (status === 'error') {
+            syncEl.innerHTML = '<i class="fas fa-exclamation-triangle text-red-500"></i> <span class="text-gray-700">Save karne mein error!</span>';
+            setTimeout(() => {
+                syncEl.classList.add('hidden');
+                syncEl.classList.remove('flex');
+            }, 5000);
+        }
+    }
+
+    // Fire-and-forget sync with visual status
     function syncToDatabase() {
         if (DB_SYNC_URL.trim() === "") return; 
         
-        // Sending as text/plain completely bypasses the browser's CORS preflight block
-        // meaning it will go straight to Google Sheets and save successfully.
+        showSyncStatus('saving');
+        
         fetch(DB_SYNC_URL, {
             method: "POST",
-            headers: { "Content-Type": "text/plain;charset=utf-8" },
             body: JSON.stringify({ action: "saveRecords", records: records })
         })
-        .then(response => response.json())
-        .then(data => {
-            console.log("Data successfully synced to Google Sheets", data);
+        .then(() => {
+            showSyncStatus('success');
         })
         .catch(error => {
             console.error("Sync Error:", error);
-            showToast("Server se link toot gaya, par data locally save hai.", "info");
+            showSyncStatus('error');
         });
     }
 
@@ -435,7 +466,7 @@
         records.unshift(newRecord); 
         setupData = { ownerName: '', totalArea: '', unit: 'Gaj', keptArea: '', numDivisions: '', divisionNames: [], divisionMode: 'equal', divisionAreas: [] };
         
-        showToast("Naya record save ho gaya!", "success");
+        showToast("Naya record local update ho gaya!", "success");
         setView('dashboard'); 
         syncToDatabase();
     }
@@ -566,7 +597,7 @@
                 let customAreaInput = setupData.divisionMode === 'custom' ? `
                     <div class="mt-2">
                         <label class="block text-xs text-gray-600 mb-1">Kitni Zameen (${setupData.unit})?</label>
-                        <input required type="number" step="0.01" value="${setupData.divisionAreas[i] || ''}" oninput="updateDivisionArea(${i}, this.value)" class="w-full p-2 border rounded-md outline-none" />
+                        <input required type="number" step="any" value="${setupData.divisionAreas[i] || ''}" oninput="updateDivisionArea(${i}, this.value)" class="w-full p-2 border rounded-md outline-none" />
                     </div>` : '';
 
                 divisionInputs += `
@@ -592,7 +623,7 @@
                     <div class="flex gap-4">
                         <div class="w-2/3">
                             <label class="block text-sm text-gray-700 mb-1">Kul Zameen (Total Area)</label>
-                            <input required type="number" step="0.01" value="${setupData.totalArea}" oninput="updateSetupData('totalArea', this.value)" class="w-full p-2 border rounded-md outline-none" />
+                            <input required type="number" step="any" value="${setupData.totalArea}" oninput="updateSetupData('totalArea', this.value)" class="w-full p-2 border rounded-md outline-none" />
                         </div>
                         <div class="w-1/3">
                             <label class="block text-sm text-gray-700 mb-1">Ikai (Unit)</label>
@@ -604,7 +635,7 @@
                     </div>
                     <div>
                         <label class="block text-sm text-gray-700 mb-1">Apne Paas Rokne Wali Zameen (Optional)</label>
-                        <input type="number" step="0.01" value="${setupData.keptArea}" oninput="updateSetupData('keptArea', this.value)" class="w-full p-2 border rounded-md outline-none" />
+                        <input type="number" step="any" value="${setupData.keptArea}" oninput="updateSetupData('keptArea', this.value)" class="w-full p-2 border rounded-md outline-none" />
                     </div>
                     <div>
                         <label class="block text-sm text-gray-700 mb-1">Bachi Zameen Ke Kitne Hisse Karne Hain?</label>
@@ -648,7 +679,7 @@
                 <div class="bg-blue-50 p-4 rounded-lg border border-blue-100 mt-4">
                     <div class="flex flex-wrap gap-3 items-end">
                         <div class="flex-1 min-w-[200px]"><label class="block text-xs mb-1">Kharidar Ka Naam</label><input type="text" id="buyer-${div.id}" class="w-full p-2 border rounded text-sm outline-none"/></div>
-                        <div class="w-24"><label class="block text-xs mb-1">Area</label><input type="number" step="0.01" id="area-${div.id}" class="w-full p-2 border rounded text-sm outline-none"/></div>
+                        <div class="w-24"><label class="block text-xs mb-1">Area</label><input type="number" step="any" id="area-${div.id}" class="w-full p-2 border rounded text-sm outline-none"/></div>
                         <div class="w-32"><label class="block text-xs mb-1">Date</label><input type="date" id="date-${div.id}" value="${today}" class="w-full p-2 border rounded text-sm outline-none"/></div>
                         <div class="flex gap-2 w-full sm:w-auto">
                             <button onclick="submitSale('${div.id}')" class="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700 transition">Save</button>
@@ -727,7 +758,7 @@
         <div id="add-division-section" class="bg-gray-100 p-4 rounded-lg flex flex-wrap gap-4 items-end mb-8">
             <div class="w-full text-sm font-semibold text-gray-700">Baantne Ke Liye Bachi: <span class="${unallocatedArea > 0 ? 'text-green-600' : 'text-red-500'}">${unallocatedArea} ${record.unit}</span></div>
             <div class="flex-1 min-w-[200px]"><label class="block text-sm mb-1">Naya Hissedar Naam</label><input type="text" id="new-div-name" class="w-full border border-gray-300 p-2 rounded outline-none focus:border-blue-500" ${unallocatedArea <= 0 ? 'disabled' : ''} /></div>
-            <div class="w-32"><label class="block text-sm mb-1">Area</label><input type="number" step="0.01" id="new-div-area" class="w-full border border-gray-300 p-2 rounded outline-none focus:border-blue-500" ${unallocatedArea <= 0 ? 'disabled' : ''} /></div>
+            <div class="w-32"><label class="block text-sm mb-1">Area</label><input type="number" step="any" id="new-div-area" class="w-full border border-gray-300 p-2 rounded outline-none focus:border-blue-500" ${unallocatedArea <= 0 ? 'disabled' : ''} /></div>
             <button onclick="addDivision()" class="bg-gray-800 hover:bg-gray-900 text-white px-5 py-2 rounded shadow-sm transition" ${unallocatedArea <= 0 ? 'disabled' : ''}>Hissa Jodein</button>
         </div>
 
